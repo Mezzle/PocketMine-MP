@@ -310,27 +310,27 @@ class LevelDB extends BaseLevelProvider{
 
 			$chunkVersion = ord($this->db->get($index . self::TAG_VERSION));
 
+			$binaryStream = new BinaryStream();
+
 			switch($chunkVersion){
 				case 4: //MCPE 1.1
 					//TODO: check beds
 				case 3: //MCPE 1.0
-					$stream = new BinaryStream();
-
 					for($y = 0; $y < Chunk::MAX_SUBCHUNKS; ++$y){
 						if(($data = $this->db->get($index . self::TAG_SUBCHUNK_PREFIX . chr($y))) === false){
 							continue;
 						}
 
-						$stream->setBuffer($data, 0);
-						$subChunkVersion = $stream->getByte();
+						$binaryStream->setBuffer($data, 0);
+						$subChunkVersion = $binaryStream->getByte();
 
 						switch($subChunkVersion){
 							case 0:
-								$blocks = $stream->get(4096);
-								$blockData = $stream->get(2048);
+								$blocks = $binaryStream->get(4096);
+								$blockData = $binaryStream->get(2048);
 								if($chunkVersion < 4){
-									$blockSkyLight = $stream->get(2048);
-									$blockLight = $stream->get(2048);
+									$blockSkyLight = $binaryStream->get(2048);
+									$blockLight = $binaryStream->get(2048);
 								}else{
 									//Mojang didn't bother changing the subchunk version when they stopped saving sky light -_-
 									$blockSkyLight = "";
@@ -345,20 +345,17 @@ class LevelDB extends BaseLevelProvider{
 						}
 					}
 
-					$stream->setBuffer($data2d = $this->db->get($index . self::TAG_DATA_2D), 0);
+					$binaryStream->setBuffer($this->db->get($index . self::TAG_DATA_2D), 0);
 
-					$heightMap = array_values(unpack("v*", $stream->get(512)));
-					$biomeIds = $stream->get(256);
-
-					$stream->reset();
-
+					$heightMap = array_values(unpack("v*", $binaryStream->get(512)));
+					$biomeIds = $binaryStream->get(256);
 					break;
 				case 2: // < MCPE 1.0
-					$stream = new BinaryStream($this->db->get($index . self::TAG_LEGACY_TERRAIN));
-					$fullIds = $stream->get(32768);
-					$fullData = $stream->get(16384);
-					$fullSkyLight = $stream->get(16384);
-					$fullBlockLight = $stream->get(16384);
+					$binaryStream->setBuffer($this->db->get($index . self::TAG_LEGACY_TERRAIN));
+					$fullIds = $binaryStream->get(32768);
+					$fullData = $binaryStream->get(16384);
+					$fullSkyLight = $binaryStream->get(16384);
+					$fullBlockLight = $binaryStream->get(16384);
 
 					for($yy = 0; $yy < 8; ++$yy){
 						$subOffset = ($yy << 4);
@@ -388,10 +385,8 @@ class LevelDB extends BaseLevelProvider{
 						$subChunks[$yy] = new SubChunk($ids, $data, $skyLight, $blockLight);
 					}
 
-					$heightMap = array_values(unpack("C*", $stream->get(256)));
-					$biomeIds = ChunkUtils::convertBiomeColors(array_values(unpack("N*", $stream->get(1024))));
-
-					$stream->reset();
+					$heightMap = array_values(unpack("C*", $binaryStream->get(256)));
+					$biomeIds = ChunkUtils::convertBiomeColors(array_values(unpack("N*", $binaryStream->get(1024))));
 					break;
 				default:
 					throw new UnsupportedChunkFormatException("don't know how to decode chunk format version $chunkVersion");
@@ -417,17 +412,16 @@ class LevelDB extends BaseLevelProvider{
 				}
 			}
 
-			/*
 			$extraData = [];
-			if(($extraRawData = $this->db->get($index . self::TAG_EXTRA_DATA)) !== false){
-				$stream = new BinaryStream($extraRawData);
-				$count = $stream->getLInt();
+			if(($extraRawData = $this->db->get($index . self::TAG_BLOCK_EXTRA_DATA)) !== false and strlen($extraRawData) > 0){
+				$binaryStream->setBuffer($extraRawData, 0);
+				$count = $binaryStream->getLInt();
 				for($i = 0; $i < $count; ++$i){
-					$key = $stream->getInt();
-					$value = $stream->getShort(false);
+					$key = $binaryStream->getLInt();
+					$value = $binaryStream->getLShort();
 					$extraData[$key] = $value;
 				}
-			}*/ //TODO
+			}
 
 			$chunk = new Chunk(
 				$chunkX,
@@ -482,6 +476,20 @@ class LevelDB extends BaseLevelProvider{
 		}
 
 		$this->db->put($index . self::TAG_DATA_2D, pack("v*", ...$chunk->getHeightMapArray()) . $chunk->getBiomeIdArray());
+
+		$extraData = $chunk->getBlockExtraDataArray();
+		if(count($extraData) > 0){
+			$stream = new BinaryStream();
+			$stream->putLInt(count($extraData));
+			foreach($extraData as $key => $value){
+				$stream->putLInt($key);
+				$stream->putLShort($value);
+			}
+
+			$this->db->put($index . self::TAG_BLOCK_EXTRA_DATA, $stream->getBuffer());
+		}else{
+			$this->db->delete($index . self::TAG_BLOCK_EXTRA_DATA);
+		}
 
 		//TODO: use this properly
 		$this->db->put($index . self::TAG_STATE_FINALISATION, chr(self::FINALISATION_DONE));
